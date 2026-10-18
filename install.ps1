@@ -21,7 +21,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # ── Constants ───────────────────────────────────────────────────────────────
-$ExtId             = 'claude-for-firefox@anthropic.community'
+$ExtId             = 'claude-for-firefox@shibeeee.github.io'
 $ChromeExtId       = 'fcoeoabgfenejglbffodgkkbkcdhcgfn'
 $NmhNameBrowser    = 'com.anthropic.claude_browser_extension'
 $NmhNameCode       = 'com.anthropic.claude_code_browser_extension'

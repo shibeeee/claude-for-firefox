@@ -171,8 +171,23 @@ This reads current tokens from Claude Code's credential store and writes them to
 
 - **Tokens are stored in a local file.** The installer copies Claude Code's OAuth access and refresh tokens into `~/.claude/firefox/extension/firefox-injected-tokens.json` (`%USERPROFILE%\.claude\firefox\extension\` on Windows). The file is readable only by your user (mode 600 on macOS / Linux, a user-only ACL on Windows), but it is not encrypted: any program running as you, and any backup or sync tool that covers your home folder, can read it. The extension also keeps a copy in its storage inside the dedicated profile. To remove both, delete that file and `~/.claude/firefox/profile/`, or run the uninstaller (`./install.sh --uninstall` or `install.ps1 -Uninstall`), which removes all of `~/.claude/firefox/`.
 - **One refresh token, two clients.** The extension and Claude Code share the same refresh token. If both refresh it, one of them may get logged out. Log in to Claude Code again and run `refresh-tokens` to resync.
-- **Unsigned temporary add-on.** This is not distributed through addons.mozilla.org and has had no store review. It is loaded as an unsigned temporary add-on with broad permissions (all sites, scripting, tabs, web requests, downloads, native messaging), so it can read and change any page you open in that profile. Review the code before you load it.
+- **Unsigned temporary add-on.** This is not distributed through addons.mozilla.org and has had no store review. It is loaded as an unsigned temporary add-on with broad permissions (all sites, scripting, tabs, web requests, downloads, native messaging), so it can read and change any page you open in that profile. Review the code before you load it. A self-signed build (see [Building a release](#building-a-release)) only passes Mozilla's automated checks, not a human review.
 - **Use a separate Firefox profile.** The launchers use a dedicated profile so the extension can't see your main profile's logins, cookies, or history. Sign in there only to the sites you want Claude to work with.
+- **Telemetry is blocked.** The manifest's `connect-src` doesn't allow the upstream analytics hosts (Segment, Sentry, Honeycomb, Datadog), so no usage telemetry leaves the browser.
+
+---
+
+## Building a release
+
+```bash
+npx web-ext build    # writes web-ext-artifacts/claude-for-firefox-unofficial-<version>.zip
+```
+
+`web-ext-config.mjs` keeps the installers, README and any `firefox-injected-tokens.json` out of the package. Upload the zip on the [Developer Hub](https://addons.mozilla.org/developers/addon/submit/distribution) and choose **On your own** to get a signed XPI for self-distribution. Bump `version` in `manifest.json` for every upload.
+
+The data the extension collects is declared in `manifest.json` (`data_collection_permissions`), and Firefox 140+ shows it at install time.
+
+A signed XPI can't read the token file the installer writes (the package can't be modified), so you have to sign in from the sidebar, which relies on `firefox-oauth-interceptor.js` catching Anthropic's `chrome-extension://` redirect. That path is untested. The native messaging hosts only accept the ID `claude-for-firefox@shibeeee.github.io`, so re-run the installer after changing it.
 
 ---
 
@@ -210,6 +225,7 @@ This reads current tokens from Claude Code's credential store and writes them to
 ```
 claude-for-firefox/
   manifest.json                  Firefox MV3 manifest
+  web-ext-config.mjs             web-ext build settings (package excludes)
   install.sh                     macOS/Linux installer
   install.ps1                    Windows installer
   firefox-bg-loader.js           Background script entry point

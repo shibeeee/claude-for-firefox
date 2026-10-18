@@ -15,7 +15,7 @@ die()   { err "$@"; exit 1; }
 banner(){ printf "\n${BOLD}── %s ──${NC}\n\n" "$*"; }
 
 # ── Constants ───────────────────────────────────────────────────────────────
-EXT_ID="claude-for-firefox@anthropic.community"
+EXT_ID="claude-for-firefox@shibeeee.github.io"
 CHROME_EXT_ID="fcoeoabgfenejglbffodgkkbkcdhcgfn"
 NMH_NAME_BROWSER="com.anthropic.claude_browser_extension"
 NMH_NAME_CODE="com.anthropic.claude_code_browser_extension"
