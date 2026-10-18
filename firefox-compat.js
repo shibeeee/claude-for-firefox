@@ -378,9 +378,14 @@
           const expr = commandParams && commandParams.expression;
           if (!expr) return { result: { type: 'undefined' } };
           try {
+            // The expression is passed as an argument and evaluated in the
+            // page's MAIN world, since the extension CSP forbids eval/new
+            // Function here. This can still fail on pages whose own CSP
+            // blocks eval.
             const results = await browser.scripting.executeScript({
               target: { tabId },
-              func: new Function('return (' + expr + ')'),
+              func: (code) => (0, eval)('(' + code + ')'),
+              args: [expr],
               world: 'MAIN',
             });
             const value = results && results[0] && results[0].result;

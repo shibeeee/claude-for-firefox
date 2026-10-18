@@ -42,6 +42,19 @@ function Exit-Fatal {
     exit 1
 }
 
+# Create an empty file, restrict its ACL to the current user only (inheritance
+# removed), then write the content, so secrets are never readable by others.
+function Set-PrivateContent {
+    param([string]$Path, [string]$Value)
+    New-Item -ItemType File -Path $Path -Force | Out-Null
+    $acl = New-Object System.Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($user, 'FullControl', 'Allow')))
+    Set-Acl -LiteralPath $Path -AclObject $acl
+    Set-Content -LiteralPath $Path -Value $Value -Encoding UTF8
+}
+
 # ── Find Claude Code ────────────────────────────────────────────────────────
 function Find-Claude {
     # 1. Env var override
@@ -229,7 +242,7 @@ public class CredHelper {
             refreshToken = $oauth.refreshToken
             expiresAt    = $oauth.expiresAt
         }
-        $tokenObj | ConvertTo-Json | Set-Content -Path $tokenFile -Encoding UTF8
+        Set-PrivateContent -Path $tokenFile -Value ($tokenObj | ConvertTo-Json)
         Write-Ok "OAuth tokens injected."
     } catch {
         Write-Warn "Failed to parse OAuth tokens: $_"
@@ -311,14 +324,31 @@ function Create-Launchers {
     $batPath = Join-Path $InstallDir 'launch.bat'
     $batContent = @"
 @echo off
-REM Launch Firefox with Claude extension.
+REM Launch Firefox with Claude extension, in a dedicated persistent profile.
 set "EXT_DIR=%USERPROFILE%\.claude\firefox\extension"
+set "PROFILE_DIR=%USERPROFILE%\.claude\firefox\profile"
 if not exist "%EXT_DIR%" (
     echo Error: Extension not installed at %EXT_DIR%. Run install.ps1 first. >&2
     exit /b 1
 )
-echo Launching Firefox with Claude extension...
-start "" "$FirefoxPath" --new-instance
+if not exist "%PROFILE_DIR%" mkdir "%PROFILE_DIR%"
+REM Temporary add-ons are uninstalled on exit; keep their storage and UUID.
+if not exist "%PROFILE_DIR%\user.js" (
+    echo user_pref("extensions.webextensions.keepStorageOnUninstall", true^);>  "%PROFILE_DIR%\user.js"
+    echo user_pref("extensions.webextensions.keepUuidOnUninstall", true^);>> "%PROFILE_DIR%\user.js"
+)
+where web-ext >nul 2>&1
+if errorlevel 1 goto manual
+echo Launching Firefox with Claude extension via web-ext...
+call web-ext run --source-dir "%EXT_DIR%" --firefox "$FirefoxPath" --firefox-profile "%PROFILE_DIR%" --keep-profile-changes
+exit /b
+:manual
+echo web-ext not found (install with: npm install -g web-ext).
+echo Opening Firefox with the Claude profile. Load the extension manually:
+echo   1. In about:debugging#/runtime/this-firefox, click 'Load Temporary Add-on...'
+echo   2. Select %EXT_DIR%\manifest.json
+echo   Temporary add-ons must be reloaded each time Firefox starts.
+start "" "$FirefoxPath" --new-instance --profile "%PROFILE_DIR%" "about:debugging#/runtime/this-firefox"
 "@
     Set-Content -Path $batPath -Value $batContent -Encoding ASCII
     Write-Ok "Launcher .bat created at $batPath"
@@ -326,14 +356,33 @@ start "" "$FirefoxPath" --new-instance
     # .ps1 launcher
     $ps1Path = Join-Path $InstallDir 'launch.ps1'
     $ps1Content = @"
-# Launch Firefox with Claude extension.
+# Launch Firefox with Claude extension, in a dedicated persistent profile.
 `$extDir = Join-Path `$env:USERPROFILE '.claude\firefox\extension'
+`$profileDir = Join-Path `$env:USERPROFILE '.claude\firefox\profile'
 if (-not (Test-Path `$extDir)) {
     Write-Error "Extension not installed at `$extDir. Run install.ps1 first."
     exit 1
 }
-Write-Host 'Launching Firefox with Claude extension...'
-Start-Process '$FirefoxPath' -ArgumentList '--new-instance'
+New-Item -ItemType Directory -Force -Path `$profileDir | Out-Null
+# Temporary add-ons are uninstalled on exit; keep their storage and UUID.
+`$userJs = Join-Path `$profileDir 'user.js'
+if (-not (Test-Path `$userJs)) {
+    Set-Content -Path `$userJs -Encoding ASCII -Value @(
+        'user_pref("extensions.webextensions.keepStorageOnUninstall", true);',
+        'user_pref("extensions.webextensions.keepUuidOnUninstall", true);'
+    )
+}
+if (Get-Command web-ext -ErrorAction SilentlyContinue) {
+    Write-Host 'Launching Firefox with Claude extension via web-ext...'
+    & web-ext run --source-dir `$extDir --firefox '$FirefoxPath' --firefox-profile `$profileDir --keep-profile-changes
+} else {
+    Write-Host 'web-ext not found (install with: npm install -g web-ext).'
+    Write-Host 'Opening Firefox with the Claude profile. Load the extension manually:'
+    Write-Host "  1. In about:debugging#/runtime/this-firefox, click 'Load Temporary Add-on...'"
+    Write-Host "  2. Select `$extDir\manifest.json"
+    Write-Host '  Temporary add-ons must be reloaded each time Firefox starts.'
+    Start-Process '$FirefoxPath' -ArgumentList @('--new-instance', '--profile', ('"' + `$profileDir + '"'), 'about:debugging#/runtime/this-firefox')
+}
 "@
     Set-Content -Path $ps1Path -Value $ps1Content -Encoding UTF8
     Write-Ok "Launcher .ps1 created at $ps1Path"
@@ -407,8 +456,17 @@ if (-not $oauth.accessToken) {
 $tokenDir = Split-Path $tokenFile
 if (-not (Test-Path $tokenDir)) { New-Item -ItemType Directory -Force -Path $tokenDir | Out-Null }
 
+# Create the file, restrict its ACL to the current user only (inheritance
+# removed), then write the tokens.
+New-Item -ItemType File -Path $tokenFile -Force | Out-Null
+$acl = New-Object System.Security.AccessControl.FileSecurity
+$acl.SetAccessRuleProtection($true, $false)
+$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($user, 'FullControl', 'Allow')))
+Set-Acl -LiteralPath $tokenFile -AclObject $acl
+
 @{ accessToken = $oauth.accessToken; refreshToken = $oauth.refreshToken; expiresAt = $oauth.expiresAt } |
-    ConvertTo-Json | Set-Content -Path $tokenFile -Encoding UTF8
+    ConvertTo-Json | Set-Content -LiteralPath $tokenFile -Encoding UTF8
 
 Write-Host 'Tokens refreshed successfully.'
 '@
@@ -461,14 +519,21 @@ function Main {
     New-Item -ItemType Directory -Force -Path $ExtDir | Out-Null
     Write-Ok "Extension directory: $ExtDir"
 
-    # Copy extension files if available
-    $scriptDir = Split-Path -Parent $MyInvocation.ScriptName
+    # Copy extension files if available (same logic as install.sh)
+    $scriptDir = $PSScriptRoot
     $srcExtDir = Join-Path $scriptDir 'extension'
-    if (Test-Path $srcExtDir) {
+    if (Test-Path (Join-Path $scriptDir 'manifest.json')) {
+        # Installer is inside the extension directory: copy everything except install scripts
+        $exclude = @('install.sh', 'install.ps1', '.git', '.DS_Store', 'node_modules', 'web-ext-artifacts', 'firefox-injected-tokens.json')
+        Get-ChildItem -LiteralPath $scriptDir -Force |
+            Where-Object { $exclude -notcontains $_.Name } |
+            Copy-Item -Destination $ExtDir -Recurse -Force
+        Write-Ok "Extension files copied to $ExtDir"
+    } elseif (Test-Path $srcExtDir) {
         Copy-Item -Path "$srcExtDir\*" -Destination $ExtDir -Recurse -Force
         Write-Ok "Extension files copied to $ExtDir"
     } else {
-        Write-Warn "No extension\ directory found next to installer. Skipping file copy."
+        Write-Warn "No extension files found. Skipping extension file copy."
         Write-Warn "Place extension source files in $ExtDir manually."
     }
 

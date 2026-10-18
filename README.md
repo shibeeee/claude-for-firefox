@@ -45,7 +45,7 @@ Claude for Firefox lets Claude work directly in your browser. Open the sidebar, 
 
 - **Firefox 128** or later
 - **Claude Code** installed and signed in — `claude --version` to verify
-- **Node.js 18+** — provides `npx` for the [web-ext](https://github.com/nichochar/web-ext) launcher
+- **Optional: [web-ext](https://github.com/mozilla/web-ext)** (`npm install -g web-ext`, needs Node.js 18+). If it is on your PATH, the launcher loads the extension automatically; otherwise it opens Firefox at `about:debugging` for a manual load.
 
 ### macOS / Linux
 
@@ -86,6 +86,8 @@ The installer handles everything:
 # Or use the macOS app
 open ~/Applications/Claude\ Firefox.app
 ```
+
+The launcher uses a dedicated, persistent Firefox profile at `~/.claude/firefox/profile/`, separate from your main profile. With `web-ext` installed it runs `web-ext run` with that profile; without it, it opens the profile at `about:debugging` and prints the manual steps.
 
 Alternatively, load manually: navigate to `about:debugging#/runtime/this-firefox`, click **Load Temporary Add-on**, and select `manifest.json` from `~/.claude/firefox/extension/`.
 
@@ -145,7 +147,7 @@ Firefox does not support all Chrome extension APIs. This port includes a compati
 
 ### OAuth
 
-Anthropic's OAuth server only accepts `chrome-extension://` redirect URIs, which Firefox cannot produce. Instead of the browser OAuth flow, the installer reads tokens from Claude Code's existing authenticated session (stored in the OS keychain) and injects them into the extension's storage. A periodic refresh check keeps them current.
+Anthropic's OAuth server only accepts `chrome-extension://` redirect URIs, which Firefox cannot produce. Instead of the browser OAuth flow, the installer reads tokens from Claude Code's existing authenticated session (stored in the OS credential store, or in `~/.claude/.credentials.json` on Linux) and injects them into the extension's storage. A periodic refresh check keeps them current.
 
 ---
 
@@ -162,6 +164,15 @@ powershell -File %USERPROFILE%\.claude\firefox\refresh-tokens.ps1
 ```
 
 This reads current tokens from Claude Code's credential store and writes them to `firefox-injected-tokens.json`. The extension picks up new tokens automatically.
+
+---
+
+## Security notes
+
+- **Tokens are stored in a local file.** The installer copies Claude Code's OAuth access and refresh tokens into `~/.claude/firefox/extension/firefox-injected-tokens.json` (`%USERPROFILE%\.claude\firefox\extension\` on Windows). The file is readable only by your user (mode 600 on macOS / Linux, a user-only ACL on Windows), but it is not encrypted: any program running as you, and any backup or sync tool that covers your home folder, can read it. The extension also keeps a copy in its storage inside the dedicated profile. To remove both, delete that file and `~/.claude/firefox/profile/`, or run the uninstaller (`./install.sh --uninstall` or `install.ps1 -Uninstall`), which removes all of `~/.claude/firefox/`.
+- **One refresh token, two clients.** The extension and Claude Code share the same refresh token. If both refresh it, one of them may get logged out. Log in to Claude Code again and run `refresh-tokens` to resync.
+- **Unsigned temporary add-on.** This is not distributed through addons.mozilla.org and has had no store review. It is loaded as an unsigned temporary add-on with broad permissions (all sites, scripting, tabs, web requests, downloads, native messaging), so it can read and change any page you open in that profile. Review the code before you load it.
+- **Use a separate Firefox profile.** The launchers use a dedicated profile so the extension can't see your main profile's logins, cookies, or history. Sign in there only to the sites you want Claude to work with.
 
 ---
 
@@ -210,6 +221,7 @@ claude-for-firefox/
   firefox-offscreen-shim.js      Audio playback shim
   firefox-claude-ai-bridge.js    claude.ai message relay
   oauth_callback.html            OAuth callback page
+  oauth_callback.js              OAuth callback page script
   sidepanel.html                 Sidebar UI
   options.html                   Extension options
   pairing.html                   Claude Desktop pairing

@@ -6,6 +6,10 @@
 (function () {
   'use strict';
 
+  // Mirror onMessageExternal in the service worker: only https://claude.ai
+  // is trusted (the manifest also matches *.claude.ai subdomains).
+  if (location.origin !== 'https://claude.ai') return;
+
   var EXTENSION_ID = chrome.runtime.id;
   var MSG_PREFIX = '__claude_firefox_ext_';
   var MSG_REQUEST = MSG_PREFIX + 'request';
@@ -75,27 +79,54 @@
   // ------------------------------------------------------------------
   // 2. Listen for messages from the page and forward to background
   // ------------------------------------------------------------------
+  // Only the message types the service worker's onMessageExternal accepts
+  // (oauth_redirect, ping, onboarding_task) are handled, rebuilt from named
+  // fields so the page cannot reach any other internal handler.
   window.addEventListener('message', function (ev) {
     if (!ev.data || ev.source !== window || ev.data.type !== MSG_REQUEST) {
       return;
     }
 
     var requestId = ev.data.id;
-    var payload = ev.data.payload;
+    var payload = ev.data.payload || {};
 
-    // Tag the message so the background knows it came from claude.ai
-    var bgMessage = Object.assign({}, payload, {
-      _source: 'claude_ai_bridge',
-    });
-
-    chrome.runtime.sendMessage(bgMessage, function (response) {
-      var error = chrome.runtime.lastError;
+    function respond(response, error) {
       window.postMessage({
         type: MSG_RESPONSE,
         id: requestId,
         payload: error ? undefined : response,
-        error: error ? error.message : undefined,
+        error: error || undefined,
       }, '*');
+    }
+
+    if (payload.type === 'ping') {
+      respond({ success: true, exists: true });
+      return;
+    }
+
+    var bgMessage;
+    if (payload.type === 'oauth_redirect') {
+      // Handled by the patched onMessage listener in the service worker.
+      bgMessage = { type: 'EXTERNAL_oauth_redirect', redirect_uri: payload.redirect_uri };
+    } else if (payload.type === 'onboarding_task') {
+      // onMessageExternal relays this to the side panel the same way.
+      bgMessage = { type: 'POPULATE_INPUT_TEXT', prompt: payload.payload && payload.payload.prompt };
+    } else {
+      respond(undefined, 'Unsupported message type');
+      return;
+    }
+
+    chrome.runtime.sendMessage(bgMessage, function (response) {
+      var error = chrome.runtime.lastError;
+      if (payload.type === 'onboarding_task') {
+        var errMsg = error ? error.message : undefined;
+        respond({
+          success: !errMsg && !!(response && response.success),
+          error: errMsg || (response && response.success ? undefined : 'side panel not ready'),
+        });
+        return;
+      }
+      respond(response, error ? error.message : undefined);
     });
   });
 

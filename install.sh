@@ -59,7 +59,7 @@ find_claude() {
     local versions_dir="$HOME/.local/share/claude/versions"
     if [[ -d "$versions_dir" ]]; then
         local latest
-        latest="$(find "$versions_dir" -maxdepth 2 -name claude -type f -perm +111 2>/dev/null | sort -V | tail -1 || true)"
+        latest="$(find "$versions_dir" -maxdepth 2 -name claude -type f -perm -u+x 2>/dev/null | sort -V | tail -1 || true)"
         if [[ -n "$latest" && -x "$latest" ]]; then
             CLAUDE_BIN="$latest"
             info "Found claude in versions dir: $CLAUDE_BIN"
@@ -119,50 +119,46 @@ inject_tokens() {
             ;;
     esac
 
+    # Claude Code on Linux (and on macOS when the Keychain is unavailable)
+    # stores credentials in a plaintext file with the same JSON shape.
+    local creds_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
+    if [[ -z "$raw_creds" && -r "$creds_file" ]]; then
+        raw_creds="$(cat "$creds_file")"
+    fi
+
     if [[ -z "$raw_creds" ]]; then
-        warn "Could not read Claude Code credentials from system keychain."
+        warn "Could not read Claude Code credentials from the system keychain or $creds_file."
         warn "Run 'claude' at least once to log in, then re-run this installer"
         warn "  or run ~/.claude/firefox/refresh-tokens.sh later."
         return 0
     fi
 
-    # Parse the OAuth JSON and extract just what we need
-    local access_token refresh_token expires_at
-    access_token="$(printf '%s' "$raw_creds" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-o = d.get('claudeAiOauth', {})
-print(o.get('accessToken', ''))
-" 2>/dev/null || true)"
+    # Parse the OAuth JSON and write just what we need. json.dump handles
+    # escaping; umask 077 makes the file owner-only from creation, and the
+    # temp file + rename means the extension never reads a partial file.
+    local rc=0
+    printf '%s' "$raw_creds" | (umask 077 && python3 -c '
+import json, os, sys
+try:
+    o = json.load(sys.stdin).get("claudeAiOauth") or {}
+except ValueError:
+    sys.exit(1)
+if not o.get("accessToken"):
+    sys.exit(1)
+path = sys.argv[1]
+with open(path + ".tmp", "w") as f:
+    json.dump({"accessToken": o["accessToken"],
+               "refreshToken": o.get("refreshToken") or "",
+               "expiresAt": o.get("expiresAt") or 0}, f, indent=2)
+os.replace(path + ".tmp", path)
+' "$EXT_DIR/firefox-injected-tokens.json") || rc=$?
 
-    refresh_token="$(printf '%s' "$raw_creds" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-o = d.get('claudeAiOauth', {})
-print(o.get('refreshToken', ''))
-" 2>/dev/null || true)"
-
-    expires_at="$(printf '%s' "$raw_creds" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-o = d.get('claudeAiOauth', {})
-print(o.get('expiresAt', 0))
-" 2>/dev/null || true)"
-
-    if [[ -z "$access_token" ]]; then
+    if [[ $rc -ne 0 ]]; then
         warn "Could not parse OAuth tokens from Claude Code credentials."
         warn "Run refresh-tokens.sh after logging into Claude Code."
         return 0
     fi
 
-    cat > "$EXT_DIR/firefox-injected-tokens.json" <<TOKEOF
-{
-  "accessToken": "$access_token",
-  "refreshToken": "$refresh_token",
-  "expiresAt": $expires_at
-}
-TOKEOF
-    chmod 600 "$EXT_DIR/firefox-injected-tokens.json"
     ok "OAuth tokens injected into extension directory."
 }
 
@@ -223,10 +219,12 @@ create_launcher() {
 
     cat > "$INSTALL_DIR/launch.sh" <<'LAUNCHEOF'
 #!/usr/bin/env bash
-# Launch Firefox with Claude extension loaded.
+# Launch Firefox with Claude extension loaded, in a dedicated profile.
 set -euo pipefail
 
 EXT_DIR="$HOME/.claude/firefox/extension"
+# Persistent profile, kept separate from the user's main Firefox profile.
+PROFILE_DIR="$HOME/.claude/firefox/profile"
 
 if [[ ! -d "$EXT_DIR" ]]; then
     echo "Error: Extension not installed at $EXT_DIR" >&2
@@ -249,8 +247,28 @@ if [[ ! -x "${FIREFOX:-}" ]]; then
     exit 1
 fi
 
-echo "Launching Firefox with Claude extension..."
-exec "$FIREFOX" --new-instance --profile "$(mktemp -d)" "$@" &
+mkdir -p "$PROFILE_DIR"
+if [[ ! -f "$PROFILE_DIR/user.js" ]]; then
+    # Temporary add-ons are uninstalled on exit; keep their storage and UUID
+    # so extension data survives restarts.
+    cat > "$PROFILE_DIR/user.js" <<'PREFSEOF'
+user_pref("extensions.webextensions.keepStorageOnUninstall", true);
+user_pref("extensions.webextensions.keepUuidOnUninstall", true);
+PREFSEOF
+fi
+
+if command -v web-ext &>/dev/null; then
+    echo "Launching Firefox with Claude extension via web-ext..."
+    exec web-ext run --source-dir "$EXT_DIR" --firefox "$FIREFOX" \
+        --firefox-profile "$PROFILE_DIR" --keep-profile-changes "$@"
+fi
+
+echo "web-ext not found (install with: npm install -g web-ext)."
+echo "Opening Firefox with the Claude profile. Load the extension manually:"
+echo "  1. In about:debugging#/runtime/this-firefox, click 'Load Temporary Add-on...'"
+echo "  2. Select $EXT_DIR/manifest.json"
+echo "  (Temporary add-ons must be reloaded each time Firefox starts.)"
+"$FIREFOX" --new-instance --profile "$PROFILE_DIR" "$@" "about:debugging#/runtime/this-firefox" &
 LAUNCHEOF
     chmod +x "$INSTALL_DIR/launch.sh"
     ok "Launcher created at $INSTALL_DIR/launch.sh"
@@ -278,29 +296,39 @@ case "$(uname -s)" in
         echo "Unsupported OS for token refresh." >&2; exit 1 ;;
 esac
 
+# Claude Code on Linux (and on macOS when the Keychain is unavailable)
+# stores credentials in a plaintext file with the same JSON shape.
+CREDS_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
+if [[ -z "$raw_creds" && -r "$CREDS_FILE" ]]; then
+    raw_creds="$(cat "$CREDS_FILE")"
+fi
+
 if [[ -z "$raw_creds" ]]; then
     echo "Error: Could not read Claude Code credentials. Log into Claude Code first." >&2
     exit 1
 fi
 
-access_token="$(printf '%s' "$raw_creds" | python3 -c "import sys,json; o=json.load(sys.stdin).get('claudeAiOauth',{}); print(o.get('accessToken',''))")"
-refresh_token="$(printf '%s' "$raw_creds" | python3 -c "import sys,json; o=json.load(sys.stdin).get('claudeAiOauth',{}); print(o.get('refreshToken',''))")"
-expires_at="$(printf '%s' "$raw_creds" | python3 -c "import sys,json; o=json.load(sys.stdin).get('claudeAiOauth',{}); print(o.get('expiresAt',0))")"
-
-if [[ -z "$access_token" ]]; then
+mkdir -p "$EXT_DIR"
+# json.dump handles escaping; umask 077 makes the file owner-only from
+# creation, and the temp file + rename avoids partial reads.
+if ! printf '%s' "$raw_creds" | (umask 077 && python3 -c '
+import json, os, sys
+try:
+    o = json.load(sys.stdin).get("claudeAiOauth") or {}
+except ValueError:
+    sys.exit(1)
+if not o.get("accessToken"):
+    sys.exit(1)
+path = sys.argv[1]
+with open(path + ".tmp", "w") as f:
+    json.dump({"accessToken": o["accessToken"],
+               "refreshToken": o.get("refreshToken") or "",
+               "expiresAt": o.get("expiresAt") or 0}, f, indent=2)
+os.replace(path + ".tmp", path)
+' "$TOKEN_FILE"); then
     echo "Error: No access token found in credentials." >&2
     exit 1
 fi
-
-mkdir -p "$EXT_DIR"
-cat > "$TOKEN_FILE" <<EOF
-{
-  "accessToken": "$access_token",
-  "refreshToken": "$refresh_token",
-  "expiresAt": $expires_at
-}
-EOF
-chmod 600 "$TOKEN_FILE"
 echo "Tokens refreshed successfully."
 REFRESHEOF
     chmod +x "$INSTALL_DIR/refresh-tokens.sh"
