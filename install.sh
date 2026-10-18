@@ -114,13 +114,11 @@ inject_tokens() {
         macos)
             raw_creds="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)"
             ;;
-        linux)
-            raw_creds="$(secret-tool lookup service 'Claude Code-credentials' 2>/dev/null || true)"
-            ;;
     esac
 
     # Claude Code on Linux (and on macOS when the Keychain is unavailable)
-    # stores credentials in a plaintext file with the same JSON shape.
+    # stores credentials in a plaintext file with the same JSON shape. It has
+    # no Linux keyring (secret-tool) backend.
     local creds_file="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
     if [[ -z "$raw_creds" && -r "$creds_file" ]]; then
         raw_creds="$(cat "$creds_file")"
@@ -290,14 +288,14 @@ case "$(uname -s)" in
         raw_creds="$(security find-generic-password -s 'Claude Code-credentials' -w 2>/dev/null || true)"
         ;;
     Linux)
-        raw_creds="$(secret-tool lookup service 'Claude Code-credentials' 2>/dev/null || true)"
         ;;
     *)
         echo "Unsupported OS for token refresh." >&2; exit 1 ;;
 esac
 
 # Claude Code on Linux (and on macOS when the Keychain is unavailable)
-# stores credentials in a plaintext file with the same JSON shape.
+# stores credentials in a plaintext file with the same JSON shape. It has
+# no Linux keyring (secret-tool) backend.
 CREDS_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/.credentials.json"
 if [[ -z "$raw_creds" && -r "$CREDS_FILE" ]]; then
     raw_creds="$(cat "$CREDS_FILE")"
@@ -463,7 +461,13 @@ main() {
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [[ -f "$script_dir/manifest.json" ]]; then
         # Installer is inside the extension directory — copy everything except install scripts
-        rsync -a --exclude='install.sh' --exclude='install.ps1' --exclude='.git' --exclude='.DS_Store' --exclude='node_modules' --exclude='web-ext-artifacts' --exclude='firefox-injected-tokens.json' "$script_dir/" "$EXT_DIR/"
+        local excludes=(--exclude='install.sh' --exclude='install.ps1' --exclude='.git' --exclude='.DS_Store' --exclude='node_modules' --exclude='web-ext-artifacts' --exclude='firefox-injected-tokens.json')
+        if command -v rsync &>/dev/null; then
+            rsync -a "${excludes[@]}" "$script_dir/" "$EXT_DIR/"
+        else
+            # rsync is not installed everywhere; tar (GNU and BSD) takes the same excludes.
+            tar -C "$script_dir" "${excludes[@]}" -cf - . | tar -C "$EXT_DIR" -xf -
+        fi
         ok "Extension files copied to $EXT_DIR"
     elif [[ -d "$script_dir/extension" ]]; then
         cp -R "$script_dir/extension/"* "$EXT_DIR/" 2>/dev/null || true

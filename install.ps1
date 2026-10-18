@@ -222,8 +222,19 @@ public class CredHelper {
         }
     }
 
+    # Claude Code can also keep credentials in a plaintext file (its Credential
+    # Manager backend falls back to it), so use that when the Credential
+    # Manager entry is missing or has no usable token.
+    $configDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
+    $credsFile = Join-Path $configDir '.credentials.json'
+    $hasToken = $false
+    try { $hasToken = [bool](($rawCreds | ConvertFrom-Json).claudeAiOauth.accessToken) } catch {}
+    if (-not $hasToken -and (Test-Path -LiteralPath $credsFile)) {
+        $rawCreds = Get-Content -LiteralPath $credsFile -Raw
+    }
+
     if (-not $rawCreds) {
-        Write-Warn "Could not read Claude Code credentials from Windows Credential Manager."
+        Write-Warn "Could not read Claude Code credentials from Windows Credential Manager or $credsFile."
         Write-Warn "Run 'claude' at least once to log in, then re-run this installer."
         return
     }
@@ -436,9 +447,19 @@ public class CredHelper2 {
         Add-Type -TypeDefinition $code -Language CSharp -ErrorAction Stop
         $rawCreds = [CredHelper2]::Read('Claude Code-credentials')
     } catch {
-        Write-Error "Could not read credentials: $_"
-        exit 1
+        Write-Warning "Could not read Credential Manager: $_"
     }
+}
+
+# Claude Code can also keep credentials in a plaintext file (its Credential
+# Manager backend falls back to it), so use that when the Credential Manager
+# entry is missing or has no usable token.
+$configDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE '.claude' }
+$credsFile = Join-Path $configDir '.credentials.json'
+$hasToken = $false
+try { $hasToken = [bool](($rawCreds | ConvertFrom-Json).claudeAiOauth.accessToken) } catch {}
+if (-not $hasToken -and (Test-Path -LiteralPath $credsFile)) {
+    $rawCreds = Get-Content -LiteralPath $credsFile -Raw
 }
 
 if (-not $rawCreds) {

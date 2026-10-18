@@ -40,6 +40,8 @@
 
     var message = {
       type: 'EXTERNAL_oauth_redirect',
+      // The service worker parses code/state out of redirect_uri
+      redirect_uri: window.location.href,
       code: code,
       state: state || '',
     };

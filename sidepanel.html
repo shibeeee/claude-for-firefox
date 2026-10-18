@@ -15,14 +15,7 @@
     <link rel="stylesheet" crossorigin href="/assets/useStorageState-BQC1JwUE.css" />
     <link rel="stylesheet" crossorigin href="/assets/sidepanel-DzMG3N8Y.css" />
     <script src="/firefox-compat.js"></script>
-    <script>
-      try {
-        const theme = localStorage.getItem("theme");
-        if (theme) {
-          document.documentElement.setAttribute("data-theme", theme);
-        }
-      } catch (e) {}
-    </script>
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>

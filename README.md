@@ -147,7 +147,7 @@ Firefox does not support all Chrome extension APIs. This port includes a compati
 
 ### OAuth
 
-Anthropic's OAuth server only accepts `chrome-extension://` redirect URIs, which Firefox cannot produce. Instead of the browser OAuth flow, the installer reads tokens from Claude Code's existing authenticated session (stored in the OS credential store, or in `~/.claude/.credentials.json` on Linux) and injects them into the extension's storage. A periodic refresh check keeps them current.
+Anthropic's OAuth server only accepts `chrome-extension://` redirect URIs, which Firefox cannot produce. Instead of the browser OAuth flow, the installer reads tokens from Claude Code's existing authenticated session (stored in the macOS Keychain or Windows Credential Manager, or in `~/.claude/.credentials.json`, which is always used on Linux) and injects them into the extension's storage. A periodic refresh check keeps them current.
 
 ---
 
@@ -222,6 +222,7 @@ claude-for-firefox/
   firefox-claude-ai-bridge.js    claude.ai message relay
   oauth_callback.html            OAuth callback page
   oauth_callback.js              OAuth callback page script
+  theme-init.js                  Applies the saved theme before page load
   sidepanel.html                 Sidebar UI
   options.html                   Extension options
   pairing.html                   Claude Desktop pairing
