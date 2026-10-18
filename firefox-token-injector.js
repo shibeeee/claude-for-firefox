@@ -163,8 +163,15 @@
         if (details && details.interactive) {
           const msg = 'Firefox OAuth redirect not supported by Anthropic. Run the Claude for Firefox installer to refresh tokens.';
           if (!isPromise) {
-            chrome.runtime.lastError = { message: msg };
-            callback(undefined);
+            // Firefox's lastError setter throws; define it for the callback only.
+            const desc = Object.getOwnPropertyDescriptor(chrome.runtime, 'lastError');
+            try {
+              Object.defineProperty(chrome.runtime, 'lastError', { value: { message: msg }, configurable: true });
+              callback(undefined);
+            } finally {
+              if (desc) Object.defineProperty(chrome.runtime, 'lastError', desc);
+              else delete chrome.runtime.lastError;
+            }
           } else {
             throw new Error(msg);
           }

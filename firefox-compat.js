@@ -14,6 +14,27 @@
   const TAB_GROUP_ID_NONE = -1;
 
   // ─── Utility ──────────────────────────────────────────────────────
+  // NOTE: in Firefox, `chrome` and `browser` are the same object, so a shim
+  // that replaces chrome.X.y must not call browser.X.y (it would call itself).
+  // Save the original first and call that.
+
+  /**
+   * Call a Chrome-style callback with chrome.runtime.lastError set, as Chrome
+   * does. Firefox's lastError setter throws, so define it for the duration
+   * of the callback and then restore the original property.
+   */
+  function callWithLastError(err, cb, ...args) {
+    const desc = Object.getOwnPropertyDescriptor(chrome.runtime, 'lastError');
+    const message = (err && err.message) || String(err);
+    try {
+      Object.defineProperty(chrome.runtime, 'lastError', { value: { message }, configurable: true });
+      cb(...args);
+    } finally {
+      if (desc) Object.defineProperty(chrome.runtime, 'lastError', desc);
+      else delete chrome.runtime.lastError;
+    }
+  }
+
   /** Wrap a browser.* promise-based API as a Chrome callback-style API */
   function promiseToCallback(fn) {
     return function (...args) {
@@ -21,7 +42,7 @@
       const cb = typeof last === 'function' ? args.pop() : null;
       const p = fn.apply(this, args);
       if (cb) {
-        p.then(r => cb(r), e => { chrome.runtime.lastError = e; cb(undefined); });
+        p.then(r => cb(r), e => callWithLastError(e, cb, undefined));
       }
       return p;
     };
@@ -52,7 +73,7 @@
           }
         };
         const p = work();
-        if (cb) p.then(() => cb(), e => { chrome.runtime.lastError = e; cb(); });
+        if (cb) p.then(() => cb(), e => callWithLastError(e, cb));
         return p;
       },
       open(opts, cb) {
@@ -61,12 +82,12 @@
           // toggle is available in older Firefox
           if (browser.sidebarAction.toggle) return browser.sidebarAction.toggle();
         });
-        if (cb) p.then(() => cb(), e => { chrome.runtime.lastError = e; cb(); });
+        if (cb) p.then(() => cb(), e => callWithLastError(e, cb));
         return p;
       },
       close(opts, cb) {
         const p = browser.sidebarAction.close ? browser.sidebarAction.close() : Promise.resolve();
-        if (cb) p.then(() => cb(), e => { chrome.runtime.lastError = e; cb(); });
+        if (cb) p.then(() => cb(), e => callWithLastError(e, cb));
         return p;
       },
       getOptions(opts, cb) {
@@ -184,6 +205,10 @@
     onMoved: makeEvent(),
   };
 
+  // Originals, saved before patching (chrome.tabs === browser.tabs in Firefox)
+  const origTabsGet = chrome.tabs.get.bind(chrome.tabs);
+  const origTabsQuery = chrome.tabs.query.bind(chrome.tabs);
+
   // Patch chrome.tabs.group
   const origTabsGroup = chrome.tabs.group;
   chrome.tabs.group = promiseToCallback(async function (options) {
@@ -194,7 +219,7 @@
       let windowId = -1;
       if (tabIds.length > 0) {
         try {
-          const t = await browser.tabs.get(tabIds[0]);
+          const t = await origTabsGet(tabIds[0]);
           windowId = t.windowId;
         } catch (_) { /* fallback */ }
       }
@@ -231,21 +256,19 @@
   });
 
   // Patch chrome.tabs.get to include groupId
-  const origTabsGet = chrome.tabs.get.bind(chrome.tabs);
   chrome.tabs.get = promiseToCallback(async function (tabId) {
-    const tab = await browser.tabs.get(tabId);
+    const tab = await origTabsGet(tabId);
     await loadGroupCache();
     tab.groupId = tabGroupMap.get(tabId) ?? TAB_GROUP_ID_NONE;
     return tab;
   });
 
   // Patch chrome.tabs.query to include groupId and support groupId filter
-  const origTabsQuery = chrome.tabs.query.bind(chrome.tabs);
   chrome.tabs.query = promiseToCallback(async function (queryInfo) {
     const filterGroupId = queryInfo ? queryInfo.groupId : undefined;
     const cleanQuery = { ...queryInfo };
     delete cleanQuery.groupId;
-    const tabs = await browser.tabs.query(cleanQuery);
+    const tabs = await origTabsQuery(cleanQuery);
     await loadGroupCache();
     for (const tab of tabs) {
       tab.groupId = tabGroupMap.get(tab.id) ?? TAB_GROUP_ID_NONE;
@@ -314,12 +337,13 @@
 
   // ─── 4. chrome.identity bridge ────────────────────────────────────
   if (typeof chrome.identity === 'undefined' || !chrome.identity.getRedirectURL) {
+    // Native API, if any, saved before replacing (browser.identity is this shim)
     const existing = chrome.identity || {};
     chrome.identity = {
       ...existing,
       getRedirectURL(path) {
-        if (browser.identity && browser.identity.getRedirectURL) {
-          return browser.identity.getRedirectURL(path || '');
+        if (existing.getRedirectURL) {
+          return existing.getRedirectURL(path || '');
         }
         // Fallback: construct a plausible redirect URL
         const extId = browser.runtime.id || 'claude-for-firefox';
@@ -327,8 +351,8 @@
         return path ? base + path : base;
       },
       launchWebAuthFlow: promiseToCallback(async function (details) {
-        if (browser.identity && browser.identity.launchWebAuthFlow) {
-          return browser.identity.launchWebAuthFlow(details);
+        if (existing.launchWebAuthFlow) {
+          return existing.launchWebAuthFlow(details);
         }
         throw new Error('identity.launchWebAuthFlow not available');
       }),
