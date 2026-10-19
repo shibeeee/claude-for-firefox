@@ -88,17 +88,19 @@
     }
 
     var requestId = ev.data.id;
-    var payload = ev.data.payload || {};
 
-    function respond(response, error) {
+    handlePageMessage(ev.data.payload || {}, function (response, error) {
       window.postMessage({
         type: MSG_RESPONSE,
         id: requestId,
         payload: error ? undefined : response,
         error: error || undefined,
       }, '*');
-    }
+    });
+  });
 
+  // respond(response, error) is called exactly once.
+  function handlePageMessage(payload, respond) {
     if (payload.type === 'ping') {
       respond({ success: true, exists: true });
       return;
@@ -128,7 +130,52 @@
       }
       respond(response, error ? error.message : undefined);
     });
-  });
+  }
+
+  // ------------------------------------------------------------------
+  // 2b. Emulate Chrome's externally_connectable for the page.
+  // ------------------------------------------------------------------
+  // After the user clicks Authorize, claude.ai's consent page hands the
+  // authorization code to the extension with
+  // chrome.runtime.sendMessage(extensionId, {type: 'oauth_redirect', ...}, cb)
+  // and fails ("Chrome extension API not available") when the page has no
+  // chrome.runtime, which is always the case in Firefox. It also pings the
+  // extension the same way to detect it. Expose a minimal
+  // chrome.runtime.sendMessage that goes through handlePageMessage above.
+  // exportFunction is used (not an injected <script>) so claude.ai's CSP
+  // doesn't apply.
+  function exposePageRuntime() {
+    var pageWin = window.wrappedJSObject;
+    if (!pageWin || typeof exportFunction !== 'function' || pageWin.chrome) return;
+
+    var runtime = new pageWin.Object();
+    exportFunction(function (extensionId, message, optionsOrCallback, maybeCallback) {
+      var callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
+      // Copy the named fields out of the page object.
+      var payload = {
+        type: message && typeof message.type === 'string' ? message.type : undefined,
+        redirect_uri: message && typeof message.redirect_uri === 'string' ? message.redirect_uri : undefined,
+        payload: message && message.payload && typeof message.payload.prompt === 'string'
+          ? { prompt: message.payload.prompt } : undefined,
+      };
+      handlePageMessage(payload, function (response, error) {
+        if (typeof callback !== 'function') return;
+        Promise.resolve().then(function () {
+          if (error) {
+            runtime.lastError = cloneInto({ message: error }, window);
+            try { callback(undefined); } finally { delete runtime.lastError; }
+          } else {
+            callback(cloneInto(response, window));
+          }
+        });
+      });
+    }, runtime, { defineAs: 'sendMessage' });
+
+    var chromeObj = new pageWin.Object();
+    chromeObj.runtime = runtime;
+    pageWin.chrome = chromeObj;
+  }
+  exposePageRuntime();
 
   // ------------------------------------------------------------------
   // 3. Forward events from background to the page

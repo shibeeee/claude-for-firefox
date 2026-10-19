@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Claude (Unofficial) for Firefox",
-  "version": "1.0.70.2",
+  "version": "1.0.70.3",
   "description": "Claude in your browser. Navigate, click, and fill forms. Works with Claude Code and Claude Desktop.",
   "browser_specific_settings": {
     "gecko": {
